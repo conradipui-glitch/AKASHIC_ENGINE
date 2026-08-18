@@ -350,7 +350,8 @@ class LongitudinalPatternEngine:
         lineage_tokens = tuple(
             sorted(
                 {
-                    *(f"source:{span.source_id}:{span.source_version_id}" for span in spans),
+                    *(f"source:{span.source_id}" for span in spans),
+                    *(f"source-version:{span.source_id}:{span.source_version_id}" for span in spans),
                     *(f"content:{span.content_hash}" for span in spans),
                 }
             )

@@ -35,12 +35,13 @@ def add_claim(
     state: ValidationState = ValidationState.SUPPORTED,
     claim_type: str = "general",
     content_hash: str | None = None,
+    source_version_id: str = "v1",
 ) -> None:
     graph.add_evidence(
         EvidenceSpan(
             evidence_id=evidence_id,
             source_id=source_id,
-            source_version_id="v1",
+            source_version_id=source_version_id,
             content_hash=content_hash or f"source-hash-{source_id}",
             excerpt=f"evidence {evidence_id}",
             observed_at=NOW + timedelta(days=days),
@@ -149,6 +150,39 @@ def test_same_source_cannot_be_split_into_fake_independent_groups():
         source_id="same-source",
         days=120,
         domains=("life",),
+    )
+    analysis = analyze(
+        graph,
+        (
+            occurrence("o1", "c1", "e1", dependency_group_id="fake-g1"),
+            occurrence("o2", "c2", "e2", dependency_group_id="fake-g2"),
+        ),
+    )
+
+    assert analysis.projection.recurrence_count == 1
+    assert analysis.projection.confidence_components.recurrence == 0.0
+    assert analysis.projection.confidence_components.temporal_spread == 0.0
+
+
+def test_same_source_across_versions_is_still_one_dependency_lineage():
+    graph = InMemoryEvidenceGraph()
+    add_claim(
+        graph,
+        claim_id="c1",
+        evidence_id="e1",
+        source_id="same-source",
+        source_version_id="v1",
+        days=0,
+        content_hash="version-hash-1",
+    )
+    add_claim(
+        graph,
+        claim_id="c2",
+        evidence_id="e2",
+        source_id="same-source",
+        source_version_id="v2",
+        days=120,
+        content_hash="version-hash-2",
     )
     analysis = analyze(
         graph,
