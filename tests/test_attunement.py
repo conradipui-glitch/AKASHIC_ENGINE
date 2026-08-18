@@ -4,7 +4,9 @@ from akashic_engine import EpistemicLevel
 from akashic_engine.attunement import (
     AttunementCandidate,
     AttunementFeatures,
+    AttunementPolicyError,
     ExplainableAttunementEngine,
+    UnknownReaderRoleError,
 )
 
 
@@ -133,3 +135,43 @@ def test_budget_must_be_positive():
             budget=0,
             candidates=(),
         )
+
+
+def test_direct_scoring_cannot_bypass_epistemic_policy():
+    engine = ExplainableAttunementEngine()
+    symbolic = candidate(
+        "symbolic-direct",
+        level=EpistemicLevel.SYMBOLIC_HYPOTHESIS,
+    )
+
+    with pytest.raises(AttunementPolicyError, match="not allowed"):
+        engine.score_candidate(symbolic)
+
+
+def test_unknown_reader_role_fails_closed_instead_of_silent_fallback():
+    engine = ExplainableAttunementEngine()
+
+    with pytest.raises(UnknownReaderRoleError, match="symoblic"):
+        engine.retrieve(
+            query="q",
+            reader_role="symoblic",
+            budget=1,
+            candidates=(candidate("a"),),
+        )
+
+
+def test_contradiction_breakdown_is_sufficient_for_replay():
+    engine = ExplainableAttunementEngine()
+    result = engine.retrieve(
+        query="challenge",
+        reader_role="skeptic",
+        budget=1,
+        candidates=(candidate("a", contradiction=0.75),),
+    ).results[0]
+
+    assert result.contradiction_feature == 0.75
+    assert result.contradiction_penalty_factor == 0.80
+    assert result.contradiction_penalty == 0.60
+    assert result.score == round(
+        result.positive_score * (1.0 - result.contradiction_penalty), 6
+    )

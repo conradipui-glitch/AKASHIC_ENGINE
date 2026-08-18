@@ -17,9 +17,11 @@ from .attunement import (
     AttunementComponent,
     AttunementFeatures,
     AttunementPolicy,
+    AttunementPolicyError,
     AttunementResult,
     AttunementWeights,
     ExplainableAttunementEngine,
+    UnknownReaderRoleError,
 )
 from .evidence_graph import (
     ClaimExplanation,
@@ -40,6 +42,7 @@ __all__ = [
     "AttunementComponent",
     "AttunementFeatures",
     "AttunementPolicy",
+    "AttunementPolicyError",
     "AttunementResult",
     "AttunementWeights",
     "Claim",
@@ -47,6 +50,7 @@ __all__ = [
     "ClaimRelation",
     "ClaimRelationType",
     "ExplainableAttunementEngine",
+    "UnknownReaderRoleError",
     "EngineEvent",
     "EpistemicBoundaryError",
     "EpistemicLevel",

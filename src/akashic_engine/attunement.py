@@ -7,6 +7,14 @@ from pydantic import Field, model_validator
 from .domain import EpistemicLevel, FrozenModel
 
 
+class AttunementPolicyError(RuntimeError):
+    pass
+
+
+class UnknownReaderRoleError(AttunementPolicyError):
+    pass
+
+
 class AttunementFeatures(FrozenModel):
     """Normalized measurements used by ATTUNE.
 
@@ -77,6 +85,8 @@ class AttunementResult(FrozenModel):
     epistemic_level: EpistemicLevel
     score: float = Field(ge=0.0, le=1.0)
     positive_score: float = Field(ge=0.0, le=1.0)
+    contradiction_feature: float = Field(ge=0.0, le=1.0)
+    contradiction_penalty_factor: float = Field(ge=0.0, le=1.0)
     contradiction_penalty: float = Field(ge=0.0, le=1.0)
     components: tuple[AttunementComponent, ...]
     evidence_refs: tuple[str, ...] = ()
@@ -96,6 +106,12 @@ class AttunementPolicy(FrozenModel):
 
 
 _DEFAULT_POLICIES: dict[str, AttunementPolicy] = {
+    "default": AttunementPolicy(
+        allowed_epistemic_levels=(
+            EpistemicLevel.OBSERVED,
+            EpistemicLevel.INTERPRETATION,
+        )
+    ),
     "skeptic": AttunementPolicy(
         allowed_epistemic_levels=(
             EpistemicLevel.OBSERVED,
@@ -136,15 +152,10 @@ class ExplainableAttunementEngine:
         self.weights = weights or AttunementWeights()
 
     def policy_for_role(self, reader_role: str) -> AttunementPolicy:
-        return _DEFAULT_POLICIES.get(
-            reader_role,
-            AttunementPolicy(
-                allowed_epistemic_levels=(
-                    EpistemicLevel.OBSERVED,
-                    EpistemicLevel.INTERPRETATION,
-                )
-            ),
-        )
+        try:
+            return _DEFAULT_POLICIES[reader_role]
+        except KeyError as exc:
+            raise UnknownReaderRoleError(f"Unknown reader role: {reader_role}") from exc
 
     def score_candidate(
         self,
@@ -153,6 +164,10 @@ class ExplainableAttunementEngine:
         policy: AttunementPolicy | None = None,
     ) -> AttunementResult:
         policy = policy or self.policy_for_role("default")
+        if candidate.epistemic_level not in set(policy.allowed_epistemic_levels):
+            raise AttunementPolicyError(
+                f"Epistemic level {candidate.epistemic_level.value} is not allowed by this policy"
+            )
         pairs = (
             ("semantic_similarity", candidate.features.semantic_similarity, self.weights.semantic_similarity),
             ("recurrence", candidate.features.recurrence, self.weights.recurrence),
@@ -181,6 +196,8 @@ class ExplainableAttunementEngine:
             epistemic_level=candidate.epistemic_level,
             score=round(max(0.0, min(1.0, final_score)), 6),
             positive_score=round(positive_score, 6),
+            contradiction_feature=candidate.features.contradiction,
+            contradiction_penalty_factor=policy.contradiction_penalty_factor,
             contradiction_penalty=round(penalty, 6),
             components=components,
             evidence_refs=candidate.evidence_refs,

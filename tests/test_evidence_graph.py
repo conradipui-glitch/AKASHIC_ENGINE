@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from akashic_engine import Claim, EpistemicLevel, EvidenceSpan, ValidationState
 from akashic_engine.evidence_graph import (
@@ -25,13 +26,14 @@ def claim(
     *,
     evidence_refs: tuple[str, ...] = (),
     state: ValidationState = ValidationState.UNVERIFIED,
+    level: EpistemicLevel = EpistemicLevel.OBSERVED,
 ) -> Claim:
     return Claim(
         claim_id=claim_id,
         statement=f"claim {claim_id}",
         producer="test",
         evidence_refs=evidence_refs,
-        epistemic_level=EpistemicLevel.OBSERVED,
+        epistemic_level=level,
         validation_state=state,
     )
 
@@ -88,3 +90,51 @@ def test_claim_cannot_relate_to_itself_and_duplicate_nodes_fail():
 
     with pytest.raises(DuplicateGraphNodeError):
         graph.add_claim(claim("c1"))
+
+
+def test_exact_duplicate_evidence_span_cannot_inflate_graph():
+    graph = InMemoryEvidenceGraph()
+    graph.add_evidence(span("e1"))
+
+    with pytest.raises(DuplicateGraphNodeError, match="duplicates e1"):
+        graph.add_evidence(span("e2"))
+
+
+def test_claim_cannot_count_same_evidence_reference_twice():
+    graph = InMemoryEvidenceGraph()
+    graph.add_evidence(span("e1"))
+
+    with pytest.raises(InvalidGraphRelationError, match="more than once"):
+        graph.add_claim(
+            claim(
+                "c1",
+                evidence_refs=("e1", "e1"),
+                state=ValidationState.SUPPORTED,
+            )
+        )
+
+
+def test_weaker_epistemic_claim_cannot_authoritatively_relate_to_stronger_claim():
+    graph = InMemoryEvidenceGraph()
+    graph.add_claim(claim("observed", level=EpistemicLevel.OBSERVED))
+    graph.add_claim(
+        claim("symbolic", level=EpistemicLevel.SYMBOLIC_HYPOTHESIS)
+    )
+
+    with pytest.raises(InvalidGraphRelationError, match="weaker epistemic"):
+        graph.add_relation(
+            "symbolic",
+            "observed",
+            ClaimRelationType.SUPPORTS,
+        )
+
+
+def test_claim_relation_fields_are_not_a_second_source_of_truth():
+    with pytest.raises(ValidationError):
+        Claim(
+            claim_id="c1",
+            statement="claim",
+            producer="test",
+            epistemic_level=EpistemicLevel.OBSERVED,
+            supports=("c2",),
+        )
