@@ -111,7 +111,7 @@ class InMemorySourceStore:
 
     Source identity is deterministic from ``namespace`` + ``external_key``.
     Source version identity is deterministic from source identity, content hash,
-    and the upstream observation timestamp when one is available.
+    canonical MIME type, and the upstream observation timestamp when available.
     """
 
     def __init__(self) -> None:
@@ -148,6 +148,12 @@ class InMemorySourceStore:
                     )
                 return existing
 
+            collision = self._sources.get(source_id)
+            if collision is not None:
+                raise SourceIntegrityError(
+                    "Deterministic source_id collision across different source identities"
+                )
+
             record = SourceRecord(
                 source_id=source_id,
                 namespace=namespace,
@@ -179,6 +185,7 @@ class InMemorySourceStore:
             source_version_id = self._source_version_id(
                 source_id=source_id,
                 content_hash=content_hash,
+                mime_type=mime_type,
                 observed_at=observed_at,
             )
             existing = self._versions.get(source_version_id)
@@ -186,7 +193,9 @@ class InMemorySourceStore:
                 stored = self._content_by_version[source_version_id]
                 if (
                     stored != content
+                    or existing.source_id != source_id
                     or existing.content_hash != content_hash
+                    or existing.byte_length != len(content)
                     or existing.mime_type != mime_type
                     or existing.observed_at != observed_at
                 ):
@@ -276,7 +285,7 @@ class InMemorySourceStore:
 
     def read_content(self, source_version_id: str) -> bytes:
         with self._lock:
-            self._require_version(source_version_id)
+            self.verify_version(source_version_id)
             return bytes(self._content_by_version[source_version_id])
 
     def read_artifact_content(self, artifact_id: str) -> bytes:
@@ -298,6 +307,7 @@ class InMemorySourceStore:
             expected_id = self._source_version_id(
                 source_id=version.source_id,
                 content_hash=version.content_hash,
+                mime_type=version.mime_type,
                 observed_at=version.observed_at,
             )
             if expected_id != version.source_version_id:
@@ -310,7 +320,6 @@ class InMemorySourceStore:
         self,
         source_version_id: str,
         *,
-        evidence_id: str | None = None,
         start_offset: int | None = None,
         end_offset: int | None = None,
         excerpt: str | None = None,
@@ -337,11 +346,13 @@ class InMemorySourceStore:
                 start_offset=start_offset,
                 end_offset=end_offset,
             )
-            canonical_evidence_id = evidence_id or self._evidence_id(
+            extraction_method = self._clean(extraction_method, "extraction_method").lower()
+            canonical_evidence_id = self._evidence_id(
                 source_version_id=version.source_version_id,
                 start_offset=start_offset,
                 end_offset=end_offset,
                 excerpt=excerpt,
+                extraction_method=extraction_method,
             )
             return EvidenceSpan(
                 evidence_id=canonical_evidence_id,
@@ -381,6 +392,20 @@ class InMemorySourceStore:
                 end_offset=span.end_offset,
                 excerpt=span.excerpt,
             )
+            if span.created_at != version.created_at:
+                raise InvalidSourceEvidenceError("Evidence created_at does not match SourceVersion")
+            canonical_method = self._clean(span.extraction_method, "extraction_method").lower()
+            if span.extraction_method != canonical_method:
+                raise InvalidSourceEvidenceError("Evidence extraction_method is not canonical")
+            expected_evidence_id = self._evidence_id(
+                source_version_id=version.source_version_id,
+                start_offset=span.start_offset,
+                end_offset=span.end_offset,
+                excerpt=span.excerpt,
+                extraction_method=canonical_method,
+            )
+            if span.evidence_id != expected_evidence_id:
+                raise InvalidSourceEvidenceError("Evidence evidence_id is not canonical")
 
     def _require_source(self, source_id: str) -> SourceRecord:
         try:
@@ -416,20 +441,27 @@ class InMemorySourceStore:
         start_offset: int | None,
         end_offset: int | None,
     ) -> None:
-        if start_offset is not None and start_offset < 0:
+        if (start_offset is None) != (end_offset is None):
+            raise InvalidSourceEvidenceError(
+                "start_offset and end_offset must be supplied together"
+            )
+        if start_offset is None and end_offset is None:
+            if byte_length == 0:
+                raise InvalidSourceEvidenceError(
+                    "source-bound evidence cannot reference an empty source"
+                )
+            return
+        assert start_offset is not None and end_offset is not None
+        if start_offset < 0:
             raise InvalidSourceEvidenceError("start_offset cannot be negative")
-        if end_offset is not None and end_offset < 0:
+        if end_offset < 0:
             raise InvalidSourceEvidenceError("end_offset cannot be negative")
-        if start_offset is not None and start_offset > byte_length:
+        if start_offset > byte_length:
             raise InvalidSourceEvidenceError("start_offset exceeds source byte length")
-        if end_offset is not None and end_offset > byte_length:
+        if end_offset > byte_length:
             raise InvalidSourceEvidenceError("end_offset exceeds source byte length")
-        if (
-            start_offset is not None
-            and end_offset is not None
-            and end_offset < start_offset
-        ):
-            raise InvalidSourceEvidenceError("end_offset must be >= start_offset")
+        if end_offset <= start_offset:
+            raise InvalidSourceEvidenceError("source-bound evidence must select at least one byte")
 
     @staticmethod
     def _bind_excerpt(
@@ -445,6 +477,8 @@ class InMemorySourceStore:
             )
         if excerpt is None:
             return start_offset, end_offset
+        if not excerpt:
+            raise InvalidSourceEvidenceError("Evidence excerpt cannot be empty")
 
         excerpt_bytes = excerpt.encode("utf-8")
         if start_offset is not None and end_offset is not None:
@@ -498,12 +532,14 @@ class InMemorySourceStore:
         *,
         source_id: str,
         content_hash: str,
+        mime_type: str,
         observed_at: datetime | None,
     ) -> str:
         payload = json.dumps(
             {
                 "source_id": source_id,
                 "content_hash": content_hash,
+                "mime_type": mime_type,
                 "observed_at": observed_at.isoformat() if observed_at is not None else None,
             },
             sort_keys=True,
@@ -518,6 +554,7 @@ class InMemorySourceStore:
         start_offset: int | None,
         end_offset: int | None,
         excerpt: str | None,
+        extraction_method: str,
     ) -> str:
         payload = json.dumps(
             {
@@ -525,6 +562,7 @@ class InMemorySourceStore:
                 "start_offset": start_offset,
                 "end_offset": end_offset,
                 "excerpt": excerpt,
+                "extraction_method": extraction_method,
             },
             sort_keys=True,
             separators=(",", ":"),

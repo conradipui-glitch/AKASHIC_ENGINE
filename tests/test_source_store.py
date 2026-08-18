@@ -165,7 +165,6 @@ def test_source_store_creates_evidence_with_bound_provenance():
     store, source, version = make_store_with_version(b"hello world")
     span = store.make_evidence_span(
         version.source_version_id,
-        evidence_id="e1",
         start_offset=0,
         end_offset=5,
         excerpt="hello",
@@ -180,7 +179,7 @@ def test_source_store_creates_evidence_with_bound_provenance():
 
 def test_forged_evidence_hash_or_source_identity_is_rejected():
     store, source, version = make_store_with_version()
-    valid = store.make_evidence_span(version.source_version_id, evidence_id="valid")
+    valid = store.make_evidence_span(version.source_version_id)
 
     forged_hash = valid.model_copy(update={"content_hash": "0" * 64})
     with pytest.raises(InvalidSourceEvidenceError, match="content_hash"):
@@ -205,7 +204,7 @@ def test_evidence_offsets_cannot_exceed_immutable_source_bytes():
 def test_source_bound_evidence_graph_rejects_forged_manual_spans():
     store, _, version = make_store_with_version()
     graph = SourceBoundEvidenceGraph(source_verifier=store)
-    valid = store.make_evidence_span(version.source_version_id, evidence_id="e1")
+    valid = store.make_evidence_span(version.source_version_id)
 
     assert graph.add_evidence(valid) == valid
 
@@ -286,7 +285,6 @@ def test_excerpt_is_bound_to_exact_immutable_source_bytes():
     store, _, version = make_store_with_version(b"alpha beta gamma")
     span = store.make_evidence_span(
         version.source_version_id,
-        evidence_id="e-bound",
         excerpt="beta",
     )
 
@@ -340,3 +338,113 @@ def test_default_evidence_identity_is_deterministic_for_same_source_span():
     assert first.evidence_id == second.evidence_id
     assert first.created_at == second.created_at == version.created_at
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+
+def test_source_bound_graph_rejects_noncanonical_evidence_identity_and_created_at():
+    from datetime import timedelta
+
+    store, _, version = make_store_with_version(b"canonical evidence")
+    graph = SourceBoundEvidenceGraph(source_verifier=store)
+    valid = store.make_evidence_span(version.source_version_id, excerpt="evidence")
+
+    forged_id = valid.model_copy(update={"evidence_id": "ev_forged"})
+    with pytest.raises(InvalidSourceEvidenceError, match="evidence_id"):
+        graph.add_evidence(forged_id)
+
+    forged_created = valid.model_copy(update={"created_at": valid.created_at + timedelta(seconds=1)})
+    with pytest.raises(InvalidSourceEvidenceError, match="created_at"):
+        graph.add_evidence(forged_created)
+
+
+def test_source_bound_graph_rejects_noncanonical_extraction_method_metadata():
+    store, _, version = make_store_with_version(b"canonical method")
+    graph = SourceBoundEvidenceGraph(source_verifier=store)
+    valid = store.make_evidence_span(version.source_version_id, excerpt="method")
+
+    forged = valid.model_copy(update={"extraction_method": " DIRECT "})
+    with pytest.raises(InvalidSourceEvidenceError, match="extraction_method"):
+        graph.add_evidence(forged)
+
+
+def test_manual_half_open_offset_pair_is_rejected_by_source_verifier():
+    store, _, version = make_store_with_version(b"abcdef")
+    canonical = store.make_evidence_span(version.source_version_id)
+    forged = canonical.model_copy(
+        update={
+            "start_offset": 1,
+            "end_offset": None,
+            "excerpt": None,
+        }
+    )
+
+    with pytest.raises(InvalidSourceEvidenceError, match="supplied together"):
+        store.assert_evidence_span(forged)
+
+
+def test_zero_length_and_empty_source_evidence_are_rejected():
+    store, _, version = make_store_with_version(b"abcdef")
+
+    with pytest.raises(InvalidSourceEvidenceError, match="at least one byte"):
+        store.make_evidence_span(version.source_version_id, start_offset=2, end_offset=2)
+
+    with pytest.raises(InvalidSourceEvidenceError, match="excerpt cannot be empty"):
+        store.make_evidence_span(version.source_version_id, excerpt="")
+
+    empty_store, _, empty_version = make_store_with_version(b"")
+    with pytest.raises(InvalidSourceEvidenceError, match="empty source"):
+        empty_store.make_evidence_span(empty_version.source_version_id)
+
+
+def test_read_content_detects_corruption_before_returning_bytes():
+    store, _, version = make_store_with_version(b"trusted")
+    store._content_by_version[version.source_version_id] = b"tampered"  # noqa: SLF001
+
+    with pytest.raises(SourceIntegrityError):
+        store.read_content(version.source_version_id)
+
+
+def test_evidence_identity_includes_extraction_method_and_is_store_owned():
+    store, _, version = make_store_with_version(b"alpha beta")
+    direct = store.make_evidence_span(
+        version.source_version_id,
+        excerpt="beta",
+        extraction_method=" DIRECT ",
+    )
+    parsed = store.make_evidence_span(
+        version.source_version_id,
+        excerpt="beta",
+        extraction_method="parser",
+    )
+
+    assert direct.extraction_method == "direct"
+    assert direct.evidence_id != parsed.evidence_id
+    store.assert_evidence_span(direct)
+    store.assert_evidence_span(parsed)
+
+
+
+def test_source_version_identity_includes_canonical_mime_type():
+    store = InMemorySourceStore()
+    source = store.register_source(
+        namespace="file",
+        external_key="mime-sensitive",
+        source_type="document",
+    )
+    text = store.ingest_version(
+        source.source_id,
+        content=b"{}",
+        mime_type=" TEXT/PLAIN ",
+        observed_at=OBSERVED,
+    )
+    json_version = store.ingest_version(
+        source.source_id,
+        content=b"{}",
+        mime_type="application/json",
+        observed_at=OBSERVED,
+    )
+
+    assert text.mime_type == "text/plain"
+    assert json_version.mime_type == "application/json"
+    assert text.source_version_id != json_version.source_version_id
+    assert text.content_hash == json_version.content_hash
