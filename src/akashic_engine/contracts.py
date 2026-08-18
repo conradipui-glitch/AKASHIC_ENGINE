@@ -6,7 +6,9 @@ from typing import Any, Protocol, Sequence
 
 from .attunement import AttunementBundle, AttunementCandidate
 from .domain import Claim, EngineEvent, EpistemicLevel, EvidenceSpan
+from .evidence_bundle import EvidenceBundle
 from .evidence_graph import ClaimExplanation, ClaimRelation, ClaimRelationType
+from .pattern_engine import PatternAnalysis, PatternOccurrence
 
 
 class EventStore(Protocol):
@@ -42,6 +44,18 @@ class EvidenceGraph(Protocol):
     ) -> ClaimRelation: ...
 
     def explain_claim(self, claim_id: str) -> ClaimExplanation: ...
+
+
+class PatternEngine(Protocol):
+    def build(
+        self,
+        *,
+        pattern_type: str,
+        description: str,
+        evidence_bundle: EvidenceBundle,
+        occurrences: tuple[PatternOccurrence, ...],
+        status: str = "candidate",
+    ) -> PatternAnalysis: ...
 
 
 class AttunementEngine(Protocol):

@@ -23,11 +23,28 @@ from .attunement import (
     ExplainableAttunementEngine,
     UnknownReaderRoleError,
 )
+from .evidence_bundle import (
+    DuplicateBundleRequestError,
+    EvidenceBundle,
+    EvidenceBundleBuilder,
+    EvidenceBundleError,
+    EvidenceBundleItem,
+)
 from .evidence_graph import (
     ClaimExplanation,
     ClaimRelation,
     ClaimRelationType,
     InMemoryEvidenceGraph,
+)
+from .pattern_engine import (
+    EpistemicPatternBoundaryError,
+    InvalidPatternEvidenceError,
+    LongitudinalPatternEngine,
+    PatternAnalysis,
+    PatternAttunementSignals,
+    PatternEngineError,
+    PatternOccurrence,
+    PatternOccurrenceGroup,
 )
 from .event_store import (
     EpistemicBoundaryError,
@@ -49,9 +66,15 @@ __all__ = [
     "ClaimExplanation",
     "ClaimRelation",
     "ClaimRelationType",
+    "DuplicateBundleRequestError",
+    "EvidenceBundle",
+    "EvidenceBundleBuilder",
+    "EvidenceBundleError",
+    "EvidenceBundleItem",
     "ExplainableAttunementEngine",
     "UnknownReaderRoleError",
     "EngineEvent",
+    "EpistemicPatternBoundaryError",
     "EpistemicBoundaryError",
     "EpistemicLevel",
     "EventNotFoundError",
@@ -60,8 +83,15 @@ __all__ = [
     "InMemoryEvidenceGraph",
     "InMemoryEventStore",
     "InvalidEventTransitionError",
+    "InvalidPatternEvidenceError",
+    "LongitudinalPatternEngine",
     "MethodManifest",
+    "PatternAnalysis",
+    "PatternAttunementSignals",
     "PatternConfidenceComponents",
+    "PatternEngineError",
+    "PatternOccurrence",
+    "PatternOccurrenceGroup",
     "PatternProjection",
     "ValidationState",
 ]
