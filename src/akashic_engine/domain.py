@@ -90,6 +90,7 @@ class EvidenceSpan(FrozenModel):
     end_offset: int | None = None
     excerpt: str | None = None
     extraction_method: str = "direct"
+    observed_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("end_offset")
@@ -100,6 +101,13 @@ class EvidenceSpan(FrozenModel):
             raise ValueError("end_offset must be >= start_offset")
         return value
 
+    @field_validator("observed_at")
+    @classmethod
+    def observed_at_must_be_timezone_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("observed_at must be timezone-aware")
+        return value
+
 
 class Claim(FrozenModel):
     claim_id: str = Field(default_factory=lambda: uuid4().hex)
@@ -107,9 +115,21 @@ class Claim(FrozenModel):
     claim_type: str = "general"
     producer: str
     evidence_refs: tuple[str, ...] = ()
+    domain_tags: tuple[str, ...] = ()
     epistemic_level: EpistemicLevel
     validation_state: ValidationState = ValidationState.UNVERIFIED
     created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("domain_tags")
+    @classmethod
+    def normalize_domain_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = []
+        for tag in value:
+            cleaned = tag.strip()
+            if not cleaned:
+                raise ValueError("domain tags cannot be empty")
+            normalized.append(cleaned)
+        return tuple(sorted(set(normalized)))
 
 
 class EngineEvent(FrozenModel):

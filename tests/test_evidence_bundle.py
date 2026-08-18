@@ -1,3 +1,5 @@
+import pytest
+
 from akashic_engine import (
     Claim,
     ClaimRelationType,
@@ -8,7 +10,6 @@ from akashic_engine import (
     ValidationState,
 )
 from akashic_engine.evidence_bundle import DuplicateBundleRequestError
-import pytest
 
 
 def span(evidence_id: str, *, source_id: str, excerpt: str) -> EvidenceSpan:
@@ -62,14 +63,37 @@ def test_bundle_includes_one_hop_relation_context_and_its_evidence():
     assert bundle.relations[0].relation is ClaimRelationType.CONTRADICTS
 
 
-def test_bundle_can_exclude_relation_context_but_keeps_relation_edge():
+def test_bundle_without_relation_context_has_no_dangling_relation_edges():
     bundle = EvidenceBundleBuilder(graph_with_relation()).build(
         ("c1",), include_relation_context=False
     )
 
     assert set(bundle.claim_map()) == {"c1"}
     assert set(bundle.evidence_map()) == {"e1"}
-    assert len(bundle.relations) == 1
+    assert bundle.relations == ()
+
+
+def test_one_hop_bundle_is_closed_and_does_not_leak_second_hop_edges():
+    graph = InMemoryEvidenceGraph()
+    for index in range(1, 4):
+        graph.add_evidence(
+            span(f"e{index}", source_id=f"source-{index}", excerpt=f"e{index}")
+        )
+        graph.add_claim(claim(f"c{index}", f"e{index}"))
+    graph.add_relation("c2", "c1", ClaimRelationType.SUPPORTS)
+    graph.add_relation("c3", "c2", ClaimRelationType.SUPPORTS)
+
+    bundle = EvidenceBundleBuilder(graph).build(("c1",))
+
+    assert set(bundle.claim_map()) == {"c1", "c2"}
+    assert {
+        (edge.source_claim_id, edge.target_claim_id) for edge in bundle.relations
+    } == {("c2", "c1")}
+    assert all(
+        edge.source_claim_id in bundle.claim_map()
+        and edge.target_claim_id in bundle.claim_map()
+        for edge in bundle.relations
+    )
 
 
 def test_duplicate_requested_claims_are_rejected():

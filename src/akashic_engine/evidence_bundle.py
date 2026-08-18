@@ -54,7 +54,7 @@ class EvidenceBundle(FrozenModel):
 
 
 class EvidenceBundleBuilder:
-    """Build a deterministic one-hop provenance snapshot from a graph."""
+    """Build a deterministic, closed one-hop provenance snapshot from a graph."""
 
     def __init__(self, graph: EvidenceGraphReader) -> None:
         self.graph = graph
@@ -71,40 +71,72 @@ class EvidenceBundleBuilder:
             raise DuplicateBundleRequestError("Duplicate requested claim IDs are not allowed")
 
         requested = tuple(sorted(claim_ids))
-        explanations = {claim_id: self.graph.explain_claim(claim_id) for claim_id in requested}
+        requested_explanations = {
+            claim_id: self.graph.explain_claim(claim_id) for claim_id in requested
+        }
 
-        relations: set[ClaimRelation] = set()
+        boundary_relations: set[ClaimRelation] = set()
+        for explanation in requested_explanations.values():
+            boundary_relations.update(explanation.incoming_relations)
+            boundary_relations.update(explanation.outgoing_relations)
+
         claim_context_ids = set(requested)
-        for explanation in explanations.values():
-            relations.update(explanation.incoming_relations)
-            relations.update(explanation.outgoing_relations)
-
         if include_relation_context:
-            for edge in relations:
+            for edge in boundary_relations:
                 claim_context_ids.add(edge.source_claim_id)
                 claim_context_ids.add(edge.target_claim_id)
+
+        explanations = {
+            claim_id: self.graph.explain_claim(claim_id)
+            for claim_id in sorted(claim_context_ids)
+        }
+
+        # Freeze the one-hop node set first, then retain only edges whose two
+        # endpoints are present. This prevents dangling second-hop relations.
+        closed_relations: set[ClaimRelation] = set()
+        for explanation in explanations.values():
+            for edge in (*explanation.incoming_relations, *explanation.outgoing_relations):
+                if (
+                    edge.source_claim_id in claim_context_ids
+                    and edge.target_claim_id in claim_context_ids
+                ):
+                    closed_relations.add(edge)
 
         items: list[EvidenceBundleItem] = []
         evidence_by_id: dict[str, EvidenceSpan] = {}
         for claim_id in sorted(claim_context_ids):
-            explanation = self.graph.explain_claim(claim_id)
+            explanation = explanations[claim_id]
+            incoming = tuple(
+                sorted(
+                    (
+                        edge
+                        for edge in explanation.incoming_relations
+                        if edge in closed_relations
+                    ),
+                    key=self._relation_sort_key,
+                )
+            )
+            outgoing = tuple(
+                sorted(
+                    (
+                        edge
+                        for edge in explanation.outgoing_relations
+                        if edge in closed_relations
+                    ),
+                    key=self._relation_sort_key,
+                )
+            )
             item = EvidenceBundleItem(
                 claim=explanation.claim,
                 evidence=tuple(sorted(explanation.evidence, key=lambda span: span.evidence_id)),
-                incoming_relations=tuple(
-                    sorted(explanation.incoming_relations, key=self._relation_sort_key)
-                ),
-                outgoing_relations=tuple(
-                    sorted(explanation.outgoing_relations, key=self._relation_sort_key)
-                ),
+                incoming_relations=incoming,
+                outgoing_relations=outgoing,
             )
             items.append(item)
             for span in item.evidence:
                 evidence_by_id[span.evidence_id] = span
-            relations.update(item.incoming_relations)
-            relations.update(item.outgoing_relations)
 
-        sorted_relations = tuple(sorted(relations, key=self._relation_sort_key))
+        sorted_relations = tuple(sorted(closed_relations, key=self._relation_sort_key))
         sorted_evidence = tuple(evidence_by_id[key] for key in sorted(evidence_by_id))
         fingerprint = self._fingerprint(
             requested_claim_ids=requested,

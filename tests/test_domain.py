@@ -78,3 +78,28 @@ def test_method_manifest_accepts_valid_false_and_zero_values():
     )
 
     assert manifest.missing_inputs({"enabled": False, "offset": 0}) == ()
+
+
+def test_evidence_observed_at_requires_timezone_awareness():
+    from akashic_engine import EvidenceSpan
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        EvidenceSpan(
+            source_id="s1",
+            source_version_id="v1",
+            content_hash="h1",
+            observed_at=datetime(2026, 8, 19),
+        )
+
+
+def test_claim_domain_tags_are_normalized_and_deduplicated():
+    from akashic_engine import Claim
+
+    claim = Claim(
+        statement="domain-tagged claim",
+        producer="test",
+        domain_tags=(" work ", "health", "work"),
+        epistemic_level=EpistemicLevel.OBSERVED,
+    )
+
+    assert claim.domain_tags == ("health", "work")
