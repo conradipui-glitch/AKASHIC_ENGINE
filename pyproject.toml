@@ -9,10 +9,14 @@ description = "Provider-agnostic longitudinal intelligence engine for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "AKASHIC ENGINE contributors" }]
-dependencies = []
+dependencies = ["pydantic>=2.7,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]

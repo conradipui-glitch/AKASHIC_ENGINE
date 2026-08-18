@@ -1,8 +1,37 @@
-"""Akashic Engine.
+"""AKASHIC_ENGINE core package."""
 
-The package is intentionally minimal during Milestone 1. Core contracts and
-schemas will be implemented only after source-level teardown of the reference
-projects.
-"""
+from .domain import (
+    Claim,
+    EngineEvent,
+    EpistemicLevel,
+    EventType,
+    EvidenceSpan,
+    MethodManifest,
+    PatternConfidenceComponents,
+    PatternProjection,
+    ValidationState,
+)
+from .event_store import (
+    EpistemicBoundaryError,
+    EventNotFoundError,
+    InMemoryEventStore,
+    InvalidEventTransitionError,
+)
 
-__version__ = "0.0.1"
+__all__ = [
+    "Claim",
+    "EngineEvent",
+    "EpistemicBoundaryError",
+    "EpistemicLevel",
+    "EventNotFoundError",
+    "EventType",
+    "EvidenceSpan",
+    "InMemoryEventStore",
+    "InvalidEventTransitionError",
+    "MethodManifest",
+    "PatternConfidenceComponents",
+    "PatternProjection",
+    "ValidationState",
+]
+
+__version__ = "0.1.0-dev0"
