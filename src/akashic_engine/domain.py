@@ -40,6 +40,41 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class FrozenDict(dict):
+    """JSON-serializable mapping that rejects mutation."""
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("FrozenDict is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+    def __ior__(self, other: object):
+        self._immutable()
+
+
+def _deep_freeze(value: Any) -> Any:
+    """Recursively freeze JSON-like containers while preserving serialization."""
+
+    if isinstance(value, dict):
+        frozen = dict.__new__(FrozenDict)
+        dict.__init__(frozen, ((key, _deep_freeze(item)) for key, item in value.items()))
+        return frozen
+    if isinstance(value, list):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, set):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
+
+
 class FrozenModel(BaseModel):
     """Immutable value object used for canonical/derived records."""
 
@@ -93,6 +128,11 @@ class EngineEvent(FrozenModel):
     intent: str
     target_event_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("payload", mode="after")
+    @classmethod
+    def freeze_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _deep_freeze(value)
 
 
 class PatternConfidenceComponents(FrozenModel):
@@ -154,7 +194,13 @@ class MethodManifest(FrozenModel):
     produces: tuple[str, ...] = ()
 
     def missing_inputs(self, supplied: dict[str, Any]) -> tuple[str, ...]:
-        return tuple(name for name in self.required_inputs if not supplied.get(name))
+        def missing(name: str) -> bool:
+            if name not in supplied or supplied[name] is None:
+                return True
+            value = supplied[name]
+            return isinstance(value, str) and not value.strip()
+
+        return tuple(name for name in self.required_inputs if missing(name))
 
     def validate_inputs(self, supplied: dict[str, Any]) -> None:
         missing = self.missing_inputs(supplied)

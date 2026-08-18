@@ -63,11 +63,26 @@ class InMemoryEventStore:
         except KeyError as exc:
             raise EventNotFoundError(event_id) from exc
 
+    def _is_active(self, event_id: str) -> bool:
+        return not any(
+            event.target_event_id == event_id
+            and event.event_type in {EventType.SUPERSEDE, EventType.RETRACT}
+            for event in self._events
+        )
+
+    def _require_active(self, event_id: str) -> EngineEvent:
+        event = self._get(event_id)
+        if event.event_type is EventType.RETRACT:
+            raise InvalidEventTransitionError("Retract events are not mutable records")
+        if not self._is_active(event_id):
+            raise InvalidEventTransitionError(
+                f"Event {event_id} is no longer active and cannot transition again"
+            )
+        return event
+
     def supersede(self, target_event_id: str, replacement: EngineEvent) -> EngineEvent:
         with self._lock:
-            target = self._get(target_event_id)
-            if target.event_type is EventType.RETRACT:
-                raise InvalidEventTransitionError("Cannot supersede a retract event")
+            target = self._require_active(target_event_id)
             if replacement.seq is not None:
                 raise InvalidEventTransitionError("replacement seq must be None")
             if target.epistemic_level is EpistemicLevel.OBSERVED and replacement.epistemic_level is not EpistemicLevel.OBSERVED:
@@ -94,7 +109,7 @@ class InMemoryEventStore:
         reason: str,
     ) -> EngineEvent:
         with self._lock:
-            target = self._get(target_event_id)
+            target = self._require_active(target_event_id)
             event = EngineEvent(
                 event_type=EventType.RETRACT,
                 entity_type=target.entity_type,

@@ -65,3 +65,16 @@ def test_method_manifest_blocks_execution_when_required_inputs_are_missing():
     )
     with pytest.raises(ValueError, match="birth_time"):
         manifest.validate_inputs({"birth_date": "2000-01-01"})
+
+
+def test_method_manifest_accepts_valid_false_and_zero_values():
+    manifest = MethodManifest(
+        method_id="test.flags",
+        version="1",
+        title="Flags",
+        category="test",
+        required_inputs=("enabled", "offset"),
+        allowed_epistemic_levels=(EpistemicLevel.INTERPRETATION,),
+    )
+
+    assert manifest.missing_inputs({"enabled": False, "offset": 0}) == ()

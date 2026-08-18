@@ -1,17 +1,26 @@
+import pytest
+
 from akashic_engine import (
     EngineEvent,
     EpistemicBoundaryError,
     EpistemicLevel,
     EventType,
     InMemoryEventStore,
+    InvalidEventTransitionError,
 )
 
 
-def event(level: EpistemicLevel, value: str, *, entity_id: str = "user-1") -> EngineEvent:
+def event(
+    level: EpistemicLevel,
+    value: str,
+    *,
+    entity_id: str = "user-1",
+    payload: dict | None = None,
+) -> EngineEvent:
     return EngineEvent(
         entity_type="memory",
         entity_id=entity_id,
-        payload={"value": value},
+        payload=payload if payload is not None else {"value": value},
         epistemic_level=level,
         producer="test",
         intent="test invariant",
@@ -81,3 +90,58 @@ def test_retract_removes_from_current_projection_not_replay():
     assert retract.event_type is EventType.RETRACT
     assert store.current_records(entity_id="user-1") == ()
     assert store.replay(entity_type="memory", entity_id="user-1") == (original, retract)
+
+
+def test_event_payload_is_deeply_immutable_after_append():
+    store = InMemoryEventStore()
+    stored = store.append(
+        event(
+            EpistemicLevel.OBSERVED,
+            "nested",
+            payload={"nested": {"values": [1, 2]}},
+        )
+    )
+
+    with pytest.raises(TypeError):
+        stored.payload["new"] = "mutation"
+
+    with pytest.raises(TypeError):
+        stored.payload["nested"]["values"] += (3,)
+
+    assert stored.model_dump(mode="json")["payload"] == {
+        "nested": {"values": [1, 2]}
+    }
+
+
+def test_same_event_cannot_be_superseded_twice():
+    store = InMemoryEventStore()
+    original = store.append(event(EpistemicLevel.OBSERVED, "v1"))
+    first_replacement = store.supersede(
+        original.event_id, event(EpistemicLevel.OBSERVED, "v2")
+    )
+
+    with pytest.raises(InvalidEventTransitionError, match="no longer active"):
+        store.supersede(
+            original.event_id, event(EpistemicLevel.OBSERVED, "parallel-v2")
+        )
+
+    assert store.current_records(entity_id="user-1") == (first_replacement,)
+
+
+def test_inactive_event_cannot_be_retracted_again():
+    store = InMemoryEventStore()
+    original = store.append(event(EpistemicLevel.INTERPRETATION, "candidate"))
+    store.retract(
+        original.event_id,
+        producer="reviewer",
+        intent="retract",
+        reason="unsupported",
+    )
+
+    with pytest.raises(InvalidEventTransitionError, match="no longer active"):
+        store.retract(
+            original.event_id,
+            producer="reviewer",
+            intent="retract again",
+            reason="duplicate",
+        )
