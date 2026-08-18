@@ -106,7 +106,7 @@ class EvidenceSpan(FrozenModel):
     def observed_at_must_be_timezone_aware(cls, value: datetime | None) -> datetime | None:
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError("observed_at must be timezone-aware")
-        return value
+        return value.astimezone(timezone.utc) if value is not None else None
 
 
 class Claim(FrozenModel):
