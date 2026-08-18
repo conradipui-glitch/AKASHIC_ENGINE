@@ -107,8 +107,6 @@ class Claim(FrozenModel):
     claim_type: str = "general"
     producer: str
     evidence_refs: tuple[str, ...] = ()
-    supports: tuple[str, ...] = ()
-    contradicts: tuple[str, ...] = ()
     epistemic_level: EpistemicLevel
     validation_state: ValidationState = ValidationState.UNVERIFIED
     created_at: datetime = Field(default_factory=utc_now)

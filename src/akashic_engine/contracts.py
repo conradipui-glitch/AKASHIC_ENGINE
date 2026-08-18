@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol, Sequence
 
-from .domain import EngineEvent, EpistemicLevel
+from .attunement import AttunementBundle, AttunementCandidate
+from .domain import Claim, EngineEvent, EpistemicLevel, EvidenceSpan
+from .evidence_graph import ClaimExplanation, ClaimRelation, ClaimRelationType
 
 
 class EventStore(Protocol):
@@ -27,8 +29,30 @@ class EventStore(Protocol):
     ) -> Sequence[EngineEvent]: ...
 
 
+class EvidenceGraph(Protocol):
+    def add_evidence(self, span: EvidenceSpan) -> EvidenceSpan: ...
+
+    def add_claim(self, claim: Claim) -> Claim: ...
+
+    def add_relation(
+        self,
+        source_claim_id: str,
+        target_claim_id: str,
+        relation: ClaimRelationType,
+    ) -> ClaimRelation: ...
+
+    def explain_claim(self, claim_id: str) -> ClaimExplanation: ...
+
+
 class AttunementEngine(Protocol):
-    def retrieve(self, *, query: str, reader_role: str, budget: int) -> Any: ...
+    def retrieve(
+        self,
+        *,
+        query: str,
+        reader_role: str,
+        budget: int,
+        candidates: tuple[AttunementCandidate, ...],
+    ) -> AttunementBundle: ...
 
 
 class Reader(Protocol):
