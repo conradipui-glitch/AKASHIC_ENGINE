@@ -35,6 +35,19 @@ from .evidence_graph import (
     ClaimRelation,
     ClaimRelationType,
     InMemoryEvidenceGraph,
+    SourceBoundEvidenceGraph,
+)
+from .source_store import (
+    InMemorySourceStore,
+    InvalidSourceEvidenceError,
+    SourceArtifact,
+    SourceIdentityConflictError,
+    SourceIntegrityError,
+    SourceRecord,
+    SourceStoreError,
+    SourceVersion,
+    UnknownSourceError,
+    UnknownSourceVersionError,
 )
 from .pattern_engine import (
     EpistemicPatternBoundaryError,
@@ -81,6 +94,7 @@ __all__ = [
     "EventType",
     "EvidenceSpan",
     "InMemoryEvidenceGraph",
+    "InMemorySourceStore",
     "InMemoryEventStore",
     "InvalidEventTransitionError",
     "InvalidPatternEvidenceError",
@@ -93,6 +107,16 @@ __all__ = [
     "PatternOccurrence",
     "PatternOccurrenceGroup",
     "PatternProjection",
+    "SourceArtifact",
+    "SourceBoundEvidenceGraph",
+    "SourceIdentityConflictError",
+    "SourceIntegrityError",
+    "SourceRecord",
+    "SourceStoreError",
+    "SourceVersion",
+    "InvalidSourceEvidenceError",
+    "UnknownSourceError",
+    "UnknownSourceVersionError",
     "ValidationState",
 ]
 

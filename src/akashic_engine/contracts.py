@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol, Sequence
 
 from .attunement import AttunementBundle, AttunementCandidate
@@ -9,6 +10,7 @@ from .domain import Claim, EngineEvent, EpistemicLevel, EvidenceSpan
 from .evidence_bundle import EvidenceBundle
 from .evidence_graph import ClaimExplanation, ClaimRelation, ClaimRelationType
 from .pattern_engine import PatternAnalysis, PatternOccurrence
+from .source_store import SourceRecord, SourceVersion
 
 
 class EventStore(Protocol):
@@ -29,6 +31,34 @@ class EventStore(Protocol):
         entity_id: str | None = None,
         epistemic_levels: set[EpistemicLevel] | None = None,
     ) -> Sequence[EngineEvent]: ...
+
+
+class SourceStore(Protocol):
+    def register_source(
+        self,
+        *,
+        namespace: str,
+        external_key: str,
+        source_type: str,
+        uri: str | None = None,
+    ) -> SourceRecord: ...
+
+    def ingest_version(
+        self,
+        source_id: str,
+        *,
+        content: bytes,
+        mime_type: str,
+        observed_at: datetime | None = None,
+    ) -> SourceVersion: ...
+
+    def get_source(self, source_id: str) -> SourceRecord: ...
+
+    def get_version(self, source_version_id: str) -> SourceVersion: ...
+
+    def read_content(self, source_version_id: str) -> bytes: ...
+
+    def assert_evidence_span(self, span: EvidenceSpan) -> None: ...
 
 
 class EvidenceGraph(Protocol):

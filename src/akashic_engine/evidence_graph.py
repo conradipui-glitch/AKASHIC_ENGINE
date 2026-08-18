@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from threading import RLock
+from typing import Protocol
 
 from pydantic import Field
 
@@ -24,6 +25,10 @@ class UnknownGraphNodeError(EvidenceGraphError):
 
 class InvalidGraphRelationError(EvidenceGraphError):
     pass
+
+
+class EvidenceSourceVerifier(Protocol):
+    def assert_evidence_span(self, span: EvidenceSpan) -> None: ...
 
 
 class ClaimRelationType(StrEnum):
@@ -186,3 +191,18 @@ class InMemoryEvidenceGraph:
     @staticmethod
     def _relation_sort_key(edge: ClaimRelation) -> tuple[str, str, str]:
         return (edge.relation.value, edge.source_claim_id, edge.target_claim_id)
+
+class SourceBoundEvidenceGraph(InMemoryEvidenceGraph):
+    """EvidenceGraph variant that rejects evidence not bound to a SourceStore.
+
+    The base InMemoryEvidenceGraph remains useful for trusted replay/import and
+    legacy tests. Runtime ingestion should prefer this source-bound adapter.
+    """
+
+    def __init__(self, *, source_verifier: EvidenceSourceVerifier) -> None:
+        super().__init__()
+        self._source_verifier = source_verifier
+
+    def add_evidence(self, span: EvidenceSpan) -> EvidenceSpan:
+        self._source_verifier.assert_evidence_span(span)
+        return super().add_evidence(span)
