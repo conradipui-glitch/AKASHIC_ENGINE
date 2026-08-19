@@ -178,6 +178,7 @@ class InMemoryEvidenceGraph:
             span.start_offset,
             span.end_offset,
             span.excerpt,
+            span.extraction_method,
         )
 
     @staticmethod

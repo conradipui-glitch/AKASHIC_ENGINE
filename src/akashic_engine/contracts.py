@@ -10,6 +10,7 @@ from .domain import Claim, EngineEvent, EpistemicLevel, EvidenceSpan
 from .evidence_bundle import EvidenceBundle
 from .evidence_graph import ClaimExplanation, ClaimRelation, ClaimRelationType
 from .pattern_engine import PatternAnalysis, PatternOccurrence
+from .ingestion import IngestionEnvelope, IngestionReceipt
 from .source_store import SourceRecord, SourceVersion
 
 
@@ -31,6 +32,10 @@ class EventStore(Protocol):
         entity_id: str | None = None,
         epistemic_levels: set[EpistemicLevel] | None = None,
     ) -> Sequence[EngineEvent]: ...
+
+
+class IngestionService(Protocol):
+    def ingest(self, envelope: IngestionEnvelope) -> IngestionReceipt: ...
 
 
 class SourceStore(Protocol):

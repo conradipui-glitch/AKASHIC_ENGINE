@@ -49,6 +49,21 @@ from .source_store import (
     UnknownSourceError,
     UnknownSourceVersionError,
 )
+from .ingestion import (
+    AdapterIdentityConflictError,
+    AdapterIdentityManifest,
+    AdapterIdentityRegistry,
+    AdapterIdentityValue,
+    DirectObservation,
+    DuplicateObservationError,
+    IngestionEnvelope,
+    IngestionError,
+    IngestionPipeline,
+    IngestionReceipt,
+    IngestionReplayConflictError,
+    InvalidAdapterIdentityError,
+    UnknownAdapterIdentityError,
+)
 from .pattern_engine import (
     EpistemicPatternBoundaryError,
     InvalidPatternEvidenceError,
@@ -67,6 +82,19 @@ from .event_store import (
 )
 
 __all__ = [
+    "AdapterIdentityConflictError",
+    "AdapterIdentityManifest",
+    "AdapterIdentityRegistry",
+    "AdapterIdentityValue",
+    "DirectObservation",
+    "DuplicateObservationError",
+    "IngestionEnvelope",
+    "IngestionError",
+    "IngestionPipeline",
+    "IngestionReceipt",
+    "IngestionReplayConflictError",
+    "InvalidAdapterIdentityError",
+    "UnknownAdapterIdentityError",
     "AttunementBundle",
     "AttunementCandidate",
     "AttunementComponent",

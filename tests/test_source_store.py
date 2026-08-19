@@ -76,6 +76,26 @@ def test_same_external_key_cannot_be_rebound_to_conflicting_metadata():
         )
 
 
+def test_uri_drift_does_not_rebind_or_conflict_with_source_identity():
+    store = InMemorySourceStore()
+    first = store.register_source(
+        namespace="drive",
+        external_key="file-1",
+        source_type="document",
+        uri="drive://old-link",
+    )
+    repeated = store.register_source(
+        namespace="drive",
+        external_key="file-1",
+        source_type="document",
+        uri="drive://new-link",
+    )
+
+    assert repeated == first
+    assert repeated.source_id == first.source_id
+    assert repeated.uri == "drive://old-link"
+
+
 def test_version_ids_and_hashes_are_store_computed_and_replayable():
     first, source, version = make_store_with_version(b"alpha")
     repeated = first.ingest_version(
@@ -448,3 +468,27 @@ def test_source_version_identity_includes_canonical_mime_type():
     assert json_version.mime_type == "application/json"
     assert text.source_version_id != json_version.source_version_id
     assert text.content_hash == json_version.content_hash
+
+
+def test_external_key_is_opaque_and_not_unicode_normalized_or_trimmed():
+    first = InMemorySourceStore()
+    second = InMemorySourceStore()
+    third = InMemorySourceStore()
+    composed = "caf\u00e9"
+    decomposed = "cafe\u0301"
+
+    a = first.register_source(
+        namespace="adapter", external_key=composed, source_type="message"
+    )
+    b = second.register_source(
+        namespace="adapter", external_key=decomposed, source_type="message"
+    )
+    c = third.register_source(
+        namespace="adapter", external_key=composed + " ", source_type="message"
+    )
+
+    assert a.source_id != b.source_id
+    assert a.source_id != c.source_id
+    assert a.external_key == composed
+    assert b.external_key == decomposed
+    assert c.external_key == composed + " "
