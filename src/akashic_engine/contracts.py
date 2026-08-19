@@ -10,6 +10,7 @@ from .domain import Claim, EngineEvent, EpistemicLevel, EvidenceSpan
 from .evidence_bundle import EvidenceBundle
 from .evidence_graph import ClaimExplanation, ClaimRelation, ClaimRelationType
 from .pattern_engine import PatternAnalysis, PatternOccurrence
+from .pattern_matcher import PatternMatchContext, PatternMatchProposal, PatternPromotionReceipt
 from .ingestion import IngestionEnvelope, IngestionReceipt
 from .extraction import ClaimExtractionContext, ClaimExtractionProposal, SemanticExtractionReceipt
 from .source_store import SourceRecord, SourceVersion
@@ -47,6 +48,16 @@ class SemanticExtractor(Protocol):
 
 class SemanticExtractionService(Protocol):
     def extract(self, ingestion_receipt: IngestionReceipt) -> SemanticExtractionReceipt: ...
+
+
+class PatternMatcherService(Protocol):
+    def match(self, context: PatternMatchContext) -> tuple[PatternMatchProposal, ...]: ...
+
+
+class PatternPromotionService(Protocol):
+    def promote(
+        self, extraction_receipts: tuple[SemanticExtractionReceipt, ...]
+    ) -> PatternPromotionReceipt: ...
 
 
 class SourceStore(Protocol):
