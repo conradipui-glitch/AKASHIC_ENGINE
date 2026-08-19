@@ -149,9 +149,9 @@ class InMemorySourceStore:
             existing_id = self._source_identity.get(identity)
             if existing_id is not None:
                 existing = self._sources[existing_id]
-                if existing.source_type != source_type or existing.uri != uri:
+                if existing.source_type != source_type:
                     raise SourceIdentityConflictError(
-                        "Existing source identity cannot be rebound to different metadata"
+                        "Existing source identity cannot be rebound to a different source_type"
                     )
                 return existing
 

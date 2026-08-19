@@ -76,6 +76,26 @@ def test_same_external_key_cannot_be_rebound_to_conflicting_metadata():
         )
 
 
+def test_uri_drift_does_not_rebind_or_conflict_with_source_identity():
+    store = InMemorySourceStore()
+    first = store.register_source(
+        namespace="drive",
+        external_key="file-1",
+        source_type="document",
+        uri="drive://old-link",
+    )
+    repeated = store.register_source(
+        namespace="drive",
+        external_key="file-1",
+        source_type="document",
+        uri="drive://new-link",
+    )
+
+    assert repeated == first
+    assert repeated.source_id == first.source_id
+    assert repeated.uri == "drive://old-link"
+
+
 def test_version_ids_and_hashes_are_store_computed_and_replayable():
     first, source, version = make_store_with_version(b"alpha")
     repeated = first.ingest_version(

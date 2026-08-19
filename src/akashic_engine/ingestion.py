@@ -81,6 +81,7 @@ class AdapterIdentityManifest(FrozenModel):
     """Versioned declaration of how an adapter identifies one upstream object."""
 
     adapter_id: str
+    authority_id: str
     identity_version: int = Field(ge=1)
     identity_fields: tuple[str, ...]
     allowed_source_types: tuple[str, ...] = ()
@@ -89,6 +90,13 @@ class AdapterIdentityManifest(FrozenModel):
     @classmethod
     def normalize_adapter_id(cls, value: str) -> str:
         return _identifier(value, "adapter_id")
+
+    @field_validator("authority_id")
+    @classmethod
+    def preserve_opaque_authority_id(cls, value: str) -> str:
+        if value == "":
+            raise ValueError("authority_id cannot be empty")
+        return value
 
     @field_validator("identity_fields")
     @classmethod
@@ -136,7 +144,6 @@ class DirectObservation(FrozenModel):
     excerpt: str
     start_offset: int | None = None
     end_offset: int | None = None
-    extraction_method: str = "direct"
 
     @field_validator("excerpt")
     @classmethod
@@ -145,16 +152,12 @@ class DirectObservation(FrozenModel):
             raise ValueError("observation excerpt cannot be empty")
         return value
 
-    @field_validator("extraction_method")
-    @classmethod
-    def normalize_extraction_method(cls, value: str) -> str:
-        return _clean(value, "extraction_method", lower=True)
-
 
 class IngestionEnvelope(FrozenModel):
     """Adapter-produced data before canonical source identity is assigned."""
 
     adapter_id: str
+    authority_id: str
     identity_version: int = Field(ge=1)
     identity_values: tuple[AdapterIdentityValue, ...]
     source_type: str
@@ -168,6 +171,13 @@ class IngestionEnvelope(FrozenModel):
     @classmethod
     def normalize_adapter_id(cls, value: str) -> str:
         return _identifier(value, "adapter_id")
+
+    @field_validator("authority_id")
+    @classmethod
+    def preserve_opaque_authority_id(cls, value: str) -> str:
+        if value == "":
+            raise ValueError("authority_id cannot be empty")
+        return value
 
     @field_validator("source_type", "mime_type")
     @classmethod
@@ -190,6 +200,7 @@ class IngestionEnvelope(FrozenModel):
 class IngestionReceipt(FrozenModel):
     adapter_id: str
     identity_version: int
+    authority_fingerprint: str = Field(min_length=64, max_length=64)
     namespace: str
     external_key: str
     schema_fingerprint: str = Field(min_length=64, max_length=64)
@@ -249,11 +260,11 @@ class AdapterIdentityRegistry:
     """Immutable registry for adapter identity schemes."""
 
     def __init__(self) -> None:
-        self._manifests: dict[tuple[str, int], AdapterIdentityManifest] = {}
+        self._manifests: dict[tuple[str, str, int], AdapterIdentityManifest] = {}
         self._lock = RLock()
 
     def register(self, manifest: AdapterIdentityManifest) -> AdapterIdentityManifest:
-        key = (manifest.adapter_id, manifest.identity_version)
+        key = (manifest.adapter_id, manifest.authority_id, manifest.identity_version)
         with self._lock:
             existing = self._manifests.get(key)
             if existing is not None:
@@ -265,14 +276,18 @@ class AdapterIdentityRegistry:
             self._manifests[key] = manifest
             return manifest
 
-    def get(self, adapter_id: str, identity_version: int) -> AdapterIdentityManifest:
-        key = (_identifier(adapter_id, "adapter_id"), identity_version)
+    def get(
+        self, adapter_id: str, authority_id: str, identity_version: int
+    ) -> AdapterIdentityManifest:
+        if authority_id == "":
+            raise ValueError("authority_id cannot be empty")
+        key = (_identifier(adapter_id, "adapter_id"), authority_id, identity_version)
         with self._lock:
             try:
                 return self._manifests[key]
             except KeyError as exc:
                 raise UnknownAdapterIdentityError(
-                    f"Unknown adapter identity scheme: {key[0]} v{identity_version}"
+                    f"Unknown adapter authority/identity scheme: {key[0]} v{identity_version}"
                 ) from exc
 
     def resolve_identity(
@@ -314,15 +329,25 @@ class AdapterIdentityRegistry:
         )
 
     @staticmethod
+    def authority_fingerprint(manifest: AdapterIdentityManifest) -> str:
+        return _sha256_json(
+            {
+                "adapter_id": manifest.adapter_id,
+                "authority_id": manifest.authority_id,
+            }
+        )
+
+    @staticmethod
     def manifest_fingerprint(manifest: AdapterIdentityManifest) -> str:
         return _sha256_json(manifest.model_dump(mode="json"))
 
     @classmethod
     def namespace(cls, manifest: AdapterIdentityManifest) -> str:
         schema = cls.schema_fingerprint(manifest)
+        authority = cls.authority_fingerprint(manifest)
         return (
-            f"adapter:{manifest.adapter_id}:identity-v{manifest.identity_version}:"
-            f"schema-{schema[:12]}"
+            f"adapter:{manifest.adapter_id}:authority-{authority[:12]}:"
+            f"identity-v{manifest.identity_version}:schema-{schema[:12]}"
         )
 
     @staticmethod
@@ -336,6 +361,7 @@ class AdapterIdentityRegistry:
         identity: tuple[tuple[str, str], ...],
     ) -> str:
         payload = {
+            "authority_fingerprint": cls.authority_fingerprint(manifest),
             "schema_fingerprint": cls.schema_fingerprint(manifest),
             "identity": identity,
         }
@@ -359,7 +385,9 @@ class IngestionPipeline:
 
     def ingest(self, envelope: IngestionEnvelope) -> IngestionReceipt:
         with self._lock:
-            manifest = self.registry.get(envelope.adapter_id, envelope.identity_version)
+            manifest = self.registry.get(
+                envelope.adapter_id, envelope.authority_id, envelope.identity_version
+            )
             if manifest.allowed_source_types and envelope.source_type not in manifest.allowed_source_types:
                 raise InvalidAdapterIdentityError(
                     f"source_type {envelope.source_type!r} is not allowed by adapter schema"
@@ -367,6 +395,7 @@ class IngestionPipeline:
 
             identity = self.registry.resolve_identity(manifest, envelope.identity_values)
             schema_fingerprint = self.registry.schema_fingerprint(manifest)
+            authority_fingerprint = self.registry.authority_fingerprint(manifest)
             manifest_fingerprint = self.registry.manifest_fingerprint(manifest)
             namespace = self.registry.namespace(manifest)
             external_key = self.registry.external_key(identity)
@@ -374,6 +403,7 @@ class IngestionPipeline:
             envelope_fingerprint = self._envelope_fingerprint(
                 envelope=envelope,
                 identity=identity,
+                authority_fingerprint=authority_fingerprint,
                 manifest_fingerprint=manifest_fingerprint,
             )
             self._reject_duplicate_observations(envelope.observations)
@@ -393,7 +423,10 @@ class IngestionPipeline:
 
             evidence_ids: set[str] = set()
             claim_ids: set[str] = set()
-            producer = f"adapter:{manifest.adapter_id}@identity-v{manifest.identity_version}"
+            producer = (
+                f"adapter:{manifest.adapter_id}@authority-{authority_fingerprint[:12]}:"
+                f"identity-v{manifest.identity_version}"
+            )
             for observation in sorted(
                 envelope.observations,
                 key=self._observation_sort_key,
@@ -403,7 +436,7 @@ class IngestionPipeline:
                     start_offset=observation.start_offset,
                     end_offset=observation.end_offset,
                     excerpt=observation.excerpt,
-                    extraction_method=observation.extraction_method,
+                    extraction_method="direct",
                 )
                 self.source_store.assert_evidence_span(span)
                 span = self._ensure_evidence(span)
@@ -434,6 +467,7 @@ class IngestionPipeline:
             receipt_fingerprint = self._receipt_fingerprint(
                 adapter_id=manifest.adapter_id,
                 identity_version=manifest.identity_version,
+                authority_fingerprint=authority_fingerprint,
                 schema_fingerprint=schema_fingerprint,
                 manifest_fingerprint=manifest_fingerprint,
                 identity_fingerprint=identity_fingerprint,
@@ -446,6 +480,7 @@ class IngestionPipeline:
             return IngestionReceipt(
                 adapter_id=manifest.adapter_id,
                 identity_version=manifest.identity_version,
+                authority_fingerprint=authority_fingerprint,
                 namespace=namespace,
                 external_key=external_key,
                 schema_fingerprint=schema_fingerprint,
@@ -542,10 +577,12 @@ class IngestionPipeline:
         *,
         envelope: IngestionEnvelope,
         identity: tuple[tuple[str, str], ...],
+        authority_fingerprint: str,
         manifest_fingerprint: str,
     ) -> str:
         payload = {
             "manifest_fingerprint": manifest_fingerprint,
+            "authority_fingerprint": authority_fingerprint,
             "adapter_id": envelope.adapter_id,
             "identity_version": envelope.identity_version,
             "identity": identity,
@@ -567,6 +604,7 @@ class IngestionPipeline:
         *,
         adapter_id: str,
         identity_version: int,
+        authority_fingerprint: str,
         schema_fingerprint: str,
         manifest_fingerprint: str,
         identity_fingerprint: str,
@@ -580,6 +618,7 @@ class IngestionPipeline:
             {
                 "adapter_id": adapter_id,
                 "identity_version": identity_version,
+                "authority_fingerprint": authority_fingerprint,
                 "schema_fingerprint": schema_fingerprint,
                 "manifest_fingerprint": manifest_fingerprint,
                 "identity_fingerprint": identity_fingerprint,

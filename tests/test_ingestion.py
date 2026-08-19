@@ -29,6 +29,7 @@ def registry() -> AdapterIdentityRegistry:
     result.register(
         AdapterIdentityManifest(
             adapter_id="telegram",
+            authority_id="bot-primary",
             identity_version=1,
             identity_fields=("chat_id", "message_id"),
             allowed_source_types=("message",),
@@ -50,10 +51,12 @@ def envelope(
     observations: tuple[DirectObservation, ...] = (),
     observed_at=OBSERVED,
     identity_version: int = 1,
+    authority_id: str = "bot-primary",
     source_type: str = "message",
 ) -> IngestionEnvelope:
     return IngestionEnvelope(
         adapter_id="telegram",
+        authority_id=authority_id,
         identity_version=identity_version,
         identity_values=values
         or (
@@ -126,6 +129,7 @@ def test_registered_identity_version_cannot_be_rebound():
         reg.register(
             AdapterIdentityManifest(
                 adapter_id="telegram",
+                authority_id="bot-primary",
                 identity_version=1,
                 identity_fields=("chat_id", "message_id", "thread_id"),
                 allowed_source_types=("message",),
@@ -145,6 +149,7 @@ def test_identity_schema_version_creates_a_distinct_source_namespace():
     reg.register(
         AdapterIdentityManifest(
             adapter_id="telegram",
+            authority_id="bot-primary",
             identity_version=2,
             identity_fields=("chat_id", "message_id"),
             allowed_source_types=("message",),
@@ -160,6 +165,41 @@ def test_identity_schema_version_creates_a_distinct_source_namespace():
     assert first.namespace != second.namespace
     assert first.source_id != second.source_id
     assert first.external_key == second.external_key
+
+
+def test_same_upstream_identity_is_scoped_by_authority():
+    reg = AdapterIdentityRegistry()
+    for authority_id in ("account-a", "account-b"):
+        reg.register(
+            AdapterIdentityManifest(
+                adapter_id="telegram",
+                authority_id=authority_id,
+                identity_version=1,
+                identity_fields=("chat_id", "message_id"),
+                allowed_source_types=("message",),
+            )
+        )
+    store = InMemorySourceStore()
+    graph = SourceBoundEvidenceGraph(source_verifier=store)
+    pipe = IngestionPipeline(registry=reg, source_store=store, evidence_graph=graph)
+
+    first = pipe.ingest(envelope(authority_id="account-a"))
+    second = pipe.ingest(envelope(authority_id="account-b"))
+    manifest_a = reg.get("telegram", "account-a", 1)
+    manifest_b = reg.get("telegram", "account-b", 1)
+
+    assert reg.schema_fingerprint(manifest_a) == reg.schema_fingerprint(manifest_b)
+    assert first.authority_fingerprint != second.authority_fingerprint
+    assert first.namespace != second.namespace
+    assert first.source_id != second.source_id
+    assert first.identity_fingerprint != second.identity_fingerprint
+
+
+def test_unregistered_authority_is_rejected_before_source_creation():
+    pipe, store, _ = pipeline()
+    with pytest.raises(UnknownAdapterIdentityError):
+        pipe.ingest(envelope(authority_id="other-account"))
+    assert store._sources == {}  # noqa: SLF001
 
 
 def test_adapter_schema_restricts_source_type():
@@ -300,31 +340,24 @@ def test_identity_values_preserve_meaningful_whitespace():
     assert first.source_id != second.source_id
 
 
-def test_same_source_span_from_distinct_extraction_methods_can_coexist():
-    pipe, _, graph = pipeline()
-    receipt = pipe.ingest(
-        envelope(
-            observations=(
-                DirectObservation(excerpt="hello", extraction_method="direct"),
-                DirectObservation(excerpt="hello", extraction_method="parser"),
-            )
-        )
-    )
+def test_direct_ingestion_extraction_method_is_engine_owned():
+    with pytest.raises(ValidationError):
+        DirectObservation(excerpt="hello", extraction_method="parser")
 
-    assert len(receipt.evidence_ids) == 2
-    assert len(receipt.claim_ids) == 2
-    methods = {graph.get_evidence(evidence_id).extraction_method for evidence_id in receipt.evidence_ids}
-    assert methods == {"direct", "parser"}
+    pipe, _, graph = pipeline()
+    receipt = pipe.ingest(envelope(observations=(DirectObservation(excerpt="hello"),)))
+    evidence = graph.get_evidence(receipt.evidence_ids[0])
+    assert evidence.extraction_method == "direct"
 
 
 def test_identity_schema_drift_without_version_bump_changes_namespace_across_registries():
     first = AdapterIdentityRegistry()
     second = AdapterIdentityRegistry()
     a = AdapterIdentityManifest(
-        adapter_id="adapter", identity_version=1, identity_fields=("object_id",)
+        adapter_id="adapter", authority_id="account-1", identity_version=1, identity_fields=("object_id",)
     )
     b = AdapterIdentityManifest(
-        adapter_id="adapter", identity_version=1, identity_fields=("account_id", "object_id")
+        adapter_id="adapter", authority_id="account-1", identity_version=1, identity_fields=("account_id", "object_id")
     )
     first.register(a)
     second.register(b)
@@ -336,7 +369,7 @@ def test_identity_schema_drift_without_version_bump_changes_namespace_across_reg
 def test_manifest_policy_fingerprint_is_recorded_in_receipt():
     pipe, _, _ = pipeline()
     receipt = pipe.ingest(envelope())
-    manifest = pipe.registry.get("telegram", 1)
+    manifest = pipe.registry.get("telegram", "bot-primary", 1)
 
     assert receipt.schema_fingerprint == pipe.registry.schema_fingerprint(manifest)
     assert receipt.manifest_fingerprint == pipe.registry.manifest_fingerprint(manifest)
@@ -366,9 +399,9 @@ def test_concurrent_duplicate_delivery_is_idempotent():
 def test_adapter_and_identity_field_names_require_safe_canonical_identifiers():
     with pytest.raises(ValidationError):
         AdapterIdentityManifest(
-            adapter_id="bad adapter", identity_version=1, identity_fields=("id",)
+            adapter_id="bad adapter", authority_id="account-1", identity_version=1, identity_fields=("id",)
         )
     with pytest.raises(ValidationError):
         AdapterIdentityManifest(
-            adapter_id="good", identity_version=1, identity_fields=("bad field",)
+            adapter_id="good", authority_id="account-1", identity_version=1, identity_fields=("bad field",)
         )
