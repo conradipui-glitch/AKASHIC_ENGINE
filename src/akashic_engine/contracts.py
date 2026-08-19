@@ -11,6 +11,7 @@ from .evidence_bundle import EvidenceBundle
 from .evidence_graph import ClaimExplanation, ClaimRelation, ClaimRelationType
 from .pattern_engine import PatternAnalysis, PatternOccurrence
 from .ingestion import IngestionEnvelope, IngestionReceipt
+from .extraction import ClaimExtractionContext, ClaimExtractionProposal, SemanticExtractionReceipt
 from .source_store import SourceRecord, SourceVersion
 
 
@@ -36,6 +37,16 @@ class EventStore(Protocol):
 
 class IngestionService(Protocol):
     def ingest(self, envelope: IngestionEnvelope) -> IngestionReceipt: ...
+
+
+class SemanticExtractor(Protocol):
+    def extract(
+        self, context: ClaimExtractionContext
+    ) -> tuple[ClaimExtractionProposal, ...]: ...
+
+
+class SemanticExtractionService(Protocol):
+    def extract(self, ingestion_receipt: IngestionReceipt) -> SemanticExtractionReceipt: ...
 
 
 class SourceStore(Protocol):

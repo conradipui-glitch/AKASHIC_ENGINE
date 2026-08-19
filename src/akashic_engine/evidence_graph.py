@@ -34,6 +34,7 @@ class EvidenceSourceVerifier(Protocol):
 class ClaimRelationType(StrEnum):
     SUPPORTS = "supports"
     CONTRADICTS = "contradicts"
+    DERIVED_FROM = "derived_from"
 
 
 class ClaimRelation(FrozenModel):
@@ -108,14 +109,14 @@ class InMemoryEvidenceGraph:
     ) -> ClaimRelation:
         with self._lock:
             if source_claim_id == target_claim_id:
-                raise InvalidGraphRelationError("A claim cannot support/contradict itself")
+                raise InvalidGraphRelationError("A claim cannot relate to itself")
             source = self._require_claim(source_claim_id)
             target = self._require_claim(target_claim_id)
             if self._epistemic_rank(source.epistemic_level) > self._epistemic_rank(
                 target.epistemic_level
             ):
                 raise InvalidGraphRelationError(
-                    "A weaker epistemic claim cannot authoritatively support/contradict a stronger claim"
+                    "A weaker epistemic claim cannot authoritatively relate to a stronger claim"
                 )
             edge = ClaimRelation(
                 source_claim_id=source_claim_id,
