@@ -112,12 +112,18 @@ class InMemoryEvidenceGraph:
                 raise InvalidGraphRelationError("A claim cannot relate to itself")
             source = self._require_claim(source_claim_id)
             target = self._require_claim(target_claim_id)
-            if self._epistemic_rank(source.epistemic_level) > self._epistemic_rank(
-                target.epistemic_level
-            ):
-                raise InvalidGraphRelationError(
-                    "A weaker epistemic claim cannot authoritatively relate to a stronger claim"
-                )
+            source_rank = self._epistemic_rank(source.epistemic_level)
+            target_rank = self._epistemic_rank(target.epistemic_level)
+            if relation in {ClaimRelationType.SUPPORTS, ClaimRelationType.CONTRADICTS}:
+                if source_rank > target_rank:
+                    raise InvalidGraphRelationError(
+                        "A weaker epistemic claim cannot authoritatively support/contradict a stronger claim"
+                    )
+            elif relation is ClaimRelationType.DERIVED_FROM:
+                if source_rank < target_rank:
+                    raise InvalidGraphRelationError(
+                        "DERIVED_FROM must point from a same-or-weaker derived claim to stronger provenance"
+                    )
             edge = ClaimRelation(
                 source_claim_id=source_claim_id,
                 target_claim_id=target_claim_id,

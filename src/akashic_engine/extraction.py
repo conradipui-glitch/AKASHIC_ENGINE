@@ -12,11 +12,10 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections import defaultdict
 from threading import RLock
 from typing import Protocol
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 
 from .domain import Claim, EpistemicLevel, EvidenceSpan, FrozenModel, ValidationState
 from .evidence_graph import (
@@ -26,7 +25,6 @@ from .evidence_graph import (
     UnknownGraphNodeError,
 )
 from .ingestion import IngestionReceipt
-from .pattern_engine import PatternOccurrence
 
 
 class ExtractionError(RuntimeError):
@@ -128,12 +126,13 @@ class ClaimExtractionProposal(FrozenModel):
 
     The extractor cannot choose evidence IDs, epistemic level, claim type,
     domain tags, validation state, producer, or graph relations.
-    ``pattern_key`` is a routing hint only; it never contributes confidence.
+    ``pattern_hint`` is non-authoritative metadata only. It must be validated
+    by a later matcher before any PatternOccurrence is created.
     """
 
     source_claim_ids: tuple[str, ...]
     statement: str = Field(min_length=1, max_length=4096)
-    pattern_key: str | None = Field(default=None, max_length=128)
+    pattern_hint: str | None = Field(default=None, max_length=128)
 
     @field_validator("source_claim_ids")
     @classmethod
@@ -143,6 +142,8 @@ class ClaimExtractionProposal(FrozenModel):
             raise ValueError("source_claim_ids cannot be empty")
         if any(not item for item in normalized):
             raise ValueError("source_claim_ids cannot contain empty IDs")
+        if any(len(item) > 256 for item in normalized):
+            raise ValueError("source_claim_ids cannot exceed 256 characters")
         if len(set(normalized)) != len(normalized):
             raise ValueError("source_claim_ids must be unique")
         return normalized
@@ -152,22 +153,27 @@ class ClaimExtractionProposal(FrozenModel):
     def normalize_statement(cls, value: str) -> str:
         return _statement(value)
 
-    @field_validator("pattern_key")
+    @field_validator("pattern_hint")
     @classmethod
-    def normalize_pattern_key(cls, value: str | None) -> str | None:
+    def normalize_pattern_hint(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        return _identifier(value, "pattern_key")
+        return _identifier(value, "pattern_hint")
 
 
 class PatternOccurrenceCandidate(FrozenModel):
-    """Evidence-backed occurrence candidate routed by a non-authoritative key."""
+    """Unverified occurrence candidate that cannot enter PatternEngine directly.
+
+    ``pattern_hint`` is extractor-supplied routing metadata only. A later
+    matcher/validator must promote this record into a real PatternOccurrence.
+    """
 
     candidate_id: str
-    pattern_key: str
+    pattern_hint: str | None = None
     extraction_claim_id: str
     source_claim_ids: tuple[str, ...]
-    occurrence: PatternOccurrence
+    evidence_refs: tuple[str, ...]
+    dependency_group_id: str
     candidate_fingerprint: str = Field(min_length=64, max_length=64)
 
 
@@ -180,15 +186,6 @@ class SemanticExtractionReceipt(FrozenModel):
     derived_claim_ids: tuple[str, ...]
     occurrence_candidates: tuple[PatternOccurrenceCandidate, ...]
     receipt_fingerprint: str = Field(min_length=64, max_length=64)
-
-    def occurrences_by_pattern_key(self) -> dict[str, tuple[PatternOccurrence, ...]]:
-        grouped: dict[str, list[PatternOccurrence]] = defaultdict(list)
-        for candidate in self.occurrence_candidates:
-            grouped[candidate.pattern_key].append(candidate.occurrence)
-        return {
-            key: tuple(sorted(items, key=lambda item: item.occurrence_id))
-            for key, items in sorted(grouped.items())
-        }
 
 
 class SemanticExtractionPolicy(FrozenModel):
@@ -214,8 +211,6 @@ class SemanticExtractionPolicy(FrozenModel):
 
 
 class ClaimExtractor(Protocol):
-    manifest: ExtractorManifest
-
     def extract(self, context: ClaimExtractionContext) -> tuple[ClaimExtractionProposal, ...]: ...
 
 
@@ -253,35 +248,36 @@ class SemanticExtractionEngine:
         *,
         evidence_graph: ExtractionEvidenceGraph,
         extractor: ClaimExtractor,
+        extractor_manifest: ExtractorManifest,
         policy: SemanticExtractionPolicy | None = None,
     ) -> None:
         self.evidence_graph = evidence_graph
         self.extractor = extractor
+        self.extractor_manifest = extractor_manifest
         self.policy = policy or SemanticExtractionPolicy()
         self._lock = RLock()
 
     def extract(self, ingestion_receipt: IngestionReceipt) -> SemanticExtractionReceipt:
         with self._lock:
-            context = self._build_context(ingestion_receipt)
-            manifest = self.extractor.manifest
-            if not isinstance(manifest, ExtractorManifest):
-                raise InvalidClaimProposalError(
-                    "extractor.manifest must be an ExtractorManifest"
-                )
-            proposals = self.extractor.extract(context)
-            if not isinstance(proposals, tuple):
+            # Engine-owned configuration is snapshotted before untrusted code runs.
+            manifest = ExtractorManifest.model_validate(
+                self.extractor_manifest.model_dump(mode="python")
+            )
+            policy = SemanticExtractionPolicy.model_validate(
+                self.policy.model_dump(mode="python")
+            )
+            context = self._build_context(ingestion_receipt, policy=policy)
+            raw_proposals = self.extractor.extract(context)
+            if not isinstance(raw_proposals, tuple):
                 raise InvalidClaimProposalError(
                     "extractor must return a tuple of ClaimExtractionProposal"
                 )
-            if any(not isinstance(item, ClaimExtractionProposal) for item in proposals):
+            if len(raw_proposals) > policy.max_proposals_per_input:
                 raise InvalidClaimProposalError(
-                    "extractor returned an item that is not ClaimExtractionProposal"
+                    f"extractor returned {len(raw_proposals)} proposals; policy limit is "
+                    f"{policy.max_proposals_per_input}"
                 )
-            if len(proposals) > self.policy.max_proposals_per_input:
-                raise InvalidClaimProposalError(
-                    f"extractor returned {len(proposals)} proposals; policy limit is "
-                    f"{self.policy.max_proposals_per_input}"
-                )
+            proposals = tuple(self._revalidate_proposal(item) for item in raw_proposals)
 
             ordered = tuple(sorted(proposals, key=self._proposal_sort_key))
             proposal_fingerprints = tuple(self._proposal_fingerprint(item) for item in ordered)
@@ -296,6 +292,7 @@ class SemanticExtractionEngine:
                     source_map=source_map,
                     context=context,
                     manifest=manifest,
+                    policy=policy,
                 )
                 for proposal in ordered
             )
@@ -311,7 +308,7 @@ class SemanticExtractionEngine:
                     )
                 claims_by_id[item.claim.claim_id] = item.claim
                 for source_claim_id in item.source_claim_ids:
-                    relations.add((source_claim_id, item.claim.claim_id))
+                    relations.add((item.claim.claim_id, source_claim_id))
                 if item.candidate is not None:
                     existing_candidate = candidates.get(item.candidate.candidate_id)
                     if existing_candidate is not None and existing_candidate != item.candidate:
@@ -351,7 +348,7 @@ class SemanticExtractionEngine:
                 {
                     "ingestion_receipt_fingerprint": ingestion_receipt.receipt_fingerprint,
                     "extractor_manifest_fingerprint": manifest.fingerprint,
-                    "policy_fingerprint": self.policy.fingerprint,
+                    "policy_fingerprint": policy.fingerprint,
                     "input_fingerprint": context.input_fingerprint,
                     "proposal_fingerprint": proposal_fingerprint,
                     "derived_claim_ids": derived_tuple,
@@ -363,7 +360,7 @@ class SemanticExtractionEngine:
             return SemanticExtractionReceipt(
                 ingestion_receipt_fingerprint=ingestion_receipt.receipt_fingerprint,
                 extractor_manifest_fingerprint=manifest.fingerprint,
-                policy_fingerprint=self.policy.fingerprint,
+                policy_fingerprint=policy.fingerprint,
                 input_fingerprint=context.input_fingerprint,
                 proposal_fingerprint=proposal_fingerprint,
                 derived_claim_ids=derived_tuple,
@@ -371,7 +368,9 @@ class SemanticExtractionEngine:
                 receipt_fingerprint=receipt_fingerprint,
             )
 
-    def _build_context(self, receipt: IngestionReceipt) -> ClaimExtractionContext:
+    def _build_context(
+        self, receipt: IngestionReceipt, *, policy: SemanticExtractionPolicy
+    ) -> ClaimExtractionContext:
         if not receipt.claim_ids:
             raise InvalidExtractionInputError(
                 "ingestion receipt contains no observed claims to extract from"
@@ -380,10 +379,10 @@ class SemanticExtractionEngine:
             raise InvalidExtractionInputError("ingestion receipt contains duplicate claim IDs")
         if len(set(receipt.evidence_ids)) != len(receipt.evidence_ids):
             raise InvalidExtractionInputError("ingestion receipt contains duplicate evidence IDs")
-        if len(receipt.claim_ids) > self.policy.max_source_claims_per_input:
+        if len(receipt.claim_ids) > policy.max_source_claims_per_input:
             raise InvalidExtractionInputError(
                 f"ingestion receipt contains {len(receipt.claim_ids)} source claims; policy limit is "
-                f"{self.policy.max_source_claims_per_input}"
+                f"{policy.max_source_claims_per_input}"
             )
 
         source_claims: list[ExtractionSourceClaim] = []
@@ -485,11 +484,12 @@ class SemanticExtractionEngine:
         source_map: dict[str, ExtractionSourceClaim],
         context: ClaimExtractionContext,
         manifest: ExtractorManifest,
+        policy: SemanticExtractionPolicy,
     ) -> _PreparedProposal:
-        if len(proposal.source_claim_ids) > self.policy.max_source_claims_per_proposal:
+        if len(proposal.source_claim_ids) > policy.max_source_claims_per_proposal:
             raise InvalidClaimProposalError(
                 f"proposal references {len(proposal.source_claim_ids)} source claims; policy limit is "
-                f"{self.policy.max_source_claims_per_proposal}"
+                f"{policy.max_source_claims_per_proposal}"
             )
         missing = tuple(item for item in proposal.source_claim_ids if item not in source_map)
         if missing:
@@ -514,12 +514,12 @@ class SemanticExtractionEngine:
         claim_id = "clx_" + _sha256_json(
             {
                 "extractor_manifest_fingerprint": manifest.fingerprint,
-                "policy_fingerprint": self.policy.fingerprint,
+                "policy_fingerprint": policy.fingerprint,
                 "input_fingerprint": context.input_fingerprint,
                 "source_claim_ids": proposal.source_claim_ids,
                 "statement": proposal.statement,
                 "evidence_refs": evidence_ids,
-                "claim_type": self.policy.derived_claim_type,
+                "claim_type": policy.derived_claim_type,
                 "epistemic_level": EpistemicLevel.INTERPRETATION.value,
             }
         )[:40]
@@ -532,7 +532,7 @@ class SemanticExtractionEngine:
         claim = Claim(
             claim_id=claim_id,
             statement=proposal.statement,
-            claim_type=self.policy.derived_claim_type,
+            claim_type=policy.derived_claim_type,
             producer=producer,
             evidence_refs=evidence_ids,
             domain_tags=(),
@@ -541,7 +541,7 @@ class SemanticExtractionEngine:
             created_at=created_at,
         )
         candidate = None
-        if proposal.pattern_key is not None:
+        if proposal.pattern_hint is not None:
             candidate = self._occurrence_candidate(
                 proposal=proposal,
                 claim=claim,
@@ -561,7 +561,6 @@ class SemanticExtractionEngine:
         claim: Claim,
         source_map: dict[str, ExtractionSourceClaim],
     ) -> PatternOccurrenceCandidate:
-        assert proposal.pattern_key is not None
         source_ids = tuple(
             sorted(
                 {
@@ -574,32 +573,22 @@ class SemanticExtractionEngine:
         dependency_group_id = "dep_" + _sha256_json(
             {"source_ids": source_ids}
         )[:32]
-        occurrence_id = "occ_" + _sha256_json(
-            {
-                "pattern_key": proposal.pattern_key,
-                "claim_id": claim.claim_id,
-                "evidence_refs": claim.evidence_refs,
-            }
-        )[:40]
-        occurrence = PatternOccurrence(
-            occurrence_id=occurrence_id,
-            claim_id=claim.claim_id,
-            evidence_refs=claim.evidence_refs,
-            dependency_group_id=dependency_group_id,
-        )
         candidate_fingerprint = _sha256_json(
             {
-                "pattern_key": proposal.pattern_key,
+                "pattern_hint": proposal.pattern_hint,
+                "extraction_claim_id": claim.claim_id,
                 "source_claim_ids": proposal.source_claim_ids,
-                "occurrence": occurrence.model_dump(mode="json"),
+                "evidence_refs": claim.evidence_refs,
+                "dependency_group_id": dependency_group_id,
             }
         )
         return PatternOccurrenceCandidate(
             candidate_id="ocx_" + candidate_fingerprint[:40],
-            pattern_key=proposal.pattern_key,
+            pattern_hint=proposal.pattern_hint,
             extraction_claim_id=claim.claim_id,
             source_claim_ids=proposal.source_claim_ids,
-            occurrence=occurrence,
+            evidence_refs=claim.evidence_refs,
+            dependency_group_id=dependency_group_id,
             candidate_fingerprint=candidate_fingerprint,
         )
 
@@ -626,6 +615,21 @@ class SemanticExtractionEngine:
                 f"Canonical extracted claim ID resolved to different data: {claim.claim_id}"
             )
         return existing
+
+    @staticmethod
+    def _revalidate_proposal(item: object) -> ClaimExtractionProposal:
+        if not isinstance(item, ClaimExtractionProposal):
+            raise InvalidClaimProposalError(
+                "extractor returned an item that is not ClaimExtractionProposal"
+            )
+        try:
+            return ClaimExtractionProposal.model_validate(
+                item.model_dump(mode="python")
+            )
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise InvalidClaimProposalError(
+                "extractor returned a ClaimExtractionProposal that fails canonical validation"
+            ) from exc
 
     @staticmethod
     def _proposal_fingerprint(proposal: ClaimExtractionProposal) -> str:
