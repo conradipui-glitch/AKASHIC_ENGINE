@@ -138,3 +138,31 @@ def test_claim_relation_fields_are_not_a_second_source_of_truth():
             epistemic_level=EpistemicLevel.OBSERVED,
             supports=("c2",),
         )
+
+
+def test_derived_from_points_from_weaker_claim_to_stronger_provenance():
+    graph = InMemoryEvidenceGraph()
+    graph.add_claim(claim("observed", level=EpistemicLevel.OBSERVED))
+    graph.add_claim(claim("interpretation", level=EpistemicLevel.INTERPRETATION))
+
+    edge = graph.add_relation(
+        "interpretation",
+        "observed",
+        ClaimRelationType.DERIVED_FROM,
+    )
+
+    assert edge.source_claim_id == "interpretation"
+    assert edge.target_claim_id == "observed"
+
+
+def test_derived_from_rejects_inverted_epistemic_direction():
+    graph = InMemoryEvidenceGraph()
+    graph.add_claim(claim("observed", level=EpistemicLevel.OBSERVED))
+    graph.add_claim(claim("interpretation", level=EpistemicLevel.INTERPRETATION))
+
+    with pytest.raises(InvalidGraphRelationError, match="DERIVED_FROM"):
+        graph.add_relation(
+            "observed",
+            "interpretation",
+            ClaimRelationType.DERIVED_FROM,
+        )
