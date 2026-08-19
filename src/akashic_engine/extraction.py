@@ -168,13 +168,42 @@ class PatternOccurrenceCandidate(FrozenModel):
     matcher/validator must promote this record into a real PatternOccurrence.
     """
 
-    candidate_id: str
-    pattern_hint: str | None = None
-    extraction_claim_id: str
+    candidate_id: str = Field(min_length=1, max_length=256)
+    pattern_hint: str | None = Field(default=None, max_length=128)
+    extraction_claim_id: str = Field(min_length=1, max_length=256)
     source_claim_ids: tuple[str, ...]
     evidence_refs: tuple[str, ...]
-    dependency_group_id: str
+    dependency_group_id: str = Field(min_length=1, max_length=256)
     candidate_fingerprint: str = Field(min_length=64, max_length=64)
+
+    @field_validator("pattern_hint")
+    @classmethod
+    def normalize_candidate_pattern_hint(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _identifier(value, "pattern_hint")
+
+    @field_validator("source_claim_ids", "evidence_refs")
+    @classmethod
+    def nonempty_unique_refs(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
+        normalized = tuple(sorted(value))
+        if not normalized:
+            raise ValueError(f"{info.field_name} cannot be empty")
+        if any(not item for item in normalized):
+            raise ValueError(f"{info.field_name} cannot contain empty IDs")
+        if any(len(item) > 256 for item in normalized):
+            raise ValueError(f"{info.field_name} cannot contain IDs over 256 characters")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError(f"{info.field_name} must be unique")
+        return normalized
+
+    @field_validator("candidate_fingerprint")
+    @classmethod
+    def validate_candidate_fingerprint(cls, value: str) -> str:
+        lowered = value.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", lowered):
+            raise ValueError("candidate_fingerprint must be a SHA-256 hex digest")
+        return lowered
 
 
 class SemanticExtractionReceipt(FrozenModel):
