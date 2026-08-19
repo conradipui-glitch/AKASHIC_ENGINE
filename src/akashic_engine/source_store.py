@@ -51,13 +51,20 @@ class SourceRecord(FrozenModel):
     uri: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
-    @field_validator("namespace", "external_key", "source_type")
+    @field_validator("namespace", "source_type")
     @classmethod
-    def nonempty_identity_fields(cls, value: str) -> str:
+    def nonempty_identity_labels(cls, value: str) -> str:
         cleaned = value.strip()
         if not cleaned:
-            raise ValueError("source identity fields cannot be empty")
+            raise ValueError("source identity labels cannot be empty")
         return cleaned
+
+    @field_validator("external_key")
+    @classmethod
+    def preserve_opaque_external_key(cls, value: str) -> str:
+        if value == "":
+            raise ValueError("external_key cannot be empty")
+        return value
 
 
 class SourceVersion(FrozenModel):
@@ -133,7 +140,7 @@ class InMemorySourceStore:
         uri: str | None = None,
     ) -> SourceRecord:
         namespace = self._clean(namespace, "namespace").lower()
-        external_key = self._clean(external_key, "external_key")
+        external_key = self._opaque_key(external_key)
         source_type = self._clean(source_type, "source_type").lower()
         identity = (namespace, external_key)
         source_id = self._source_id(namespace, external_key)
@@ -425,6 +432,12 @@ class InMemorySourceStore:
         if not cleaned:
             raise ValueError(f"{field_name} cannot be empty")
         return cleaned
+
+    @staticmethod
+    def _opaque_key(value: str) -> str:
+        if value == "":
+            raise ValueError("external_key cannot be empty")
+        return value
 
     @staticmethod
     def _canonical_timestamp(value: datetime | None) -> datetime | None:

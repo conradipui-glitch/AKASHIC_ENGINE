@@ -448,3 +448,27 @@ def test_source_version_identity_includes_canonical_mime_type():
     assert json_version.mime_type == "application/json"
     assert text.source_version_id != json_version.source_version_id
     assert text.content_hash == json_version.content_hash
+
+
+def test_external_key_is_opaque_and_not_unicode_normalized_or_trimmed():
+    first = InMemorySourceStore()
+    second = InMemorySourceStore()
+    third = InMemorySourceStore()
+    composed = "caf\u00e9"
+    decomposed = "cafe\u0301"
+
+    a = first.register_source(
+        namespace="adapter", external_key=composed, source_type="message"
+    )
+    b = second.register_source(
+        namespace="adapter", external_key=decomposed, source_type="message"
+    )
+    c = third.register_source(
+        namespace="adapter", external_key=composed + " ", source_type="message"
+    )
+
+    assert a.source_id != b.source_id
+    assert a.source_id != c.source_id
+    assert a.external_key == composed
+    assert b.external_key == decomposed
+    assert c.external_key == composed + " "
